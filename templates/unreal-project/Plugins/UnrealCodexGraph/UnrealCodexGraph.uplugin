@@ -1,0 +1,19 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "0.1.0",
+  "FriendlyName": "Unreal Codex Graph",
+  "Description": "UE 5.8 editor-only Blueprint graph bridge for the Unreal Codex JSON harness.",
+  "Category": "Scripting",
+  "CreatedBy": "unreal-codex-harness contributors",
+  "EnabledByDefault": true,
+  "CanContainContent": false,
+  "IsBetaVersion": true,
+  "Modules": [
+    {
+      "Name": "UnrealCodexGraph",
+      "Type": "Editor",
+      "LoadingPhase": "Default"
+    }
+  ]
+}

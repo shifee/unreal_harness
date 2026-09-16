@@ -12,6 +12,8 @@ __pycache__/
 htmlcov/
 dist/
 build/
+.build/
+.tmp-install-test/
 *.egg-info/
 .env
 .env.*

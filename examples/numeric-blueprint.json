@@ -1,0 +1,130 @@
+{
+  "format_version": "1.0",
+  "commands": [
+    {
+      "id": "create_test_folder",
+      "action": "content.create_folder",
+      "arguments": {"path": "/Game/CodexTests"}
+    },
+    {
+      "id": "create_test_blueprint",
+      "action": "blueprint.create",
+      "depends_on": ["create_test_folder"],
+      "arguments": {
+        "folder": "/Game/CodexTests",
+        "name": "BP_CodexMathTest",
+        "parent_class": "/Script/Engine.Actor",
+        "replace_existing": false
+      }
+    },
+    {
+      "id": "add_begin_play",
+      "action": "blueprint.graph.add_node",
+      "depends_on": ["create_test_blueprint"],
+      "arguments": {
+        "blueprint": "/Game/CodexTests/BP_CodexMathTest.BP_CodexMathTest",
+        "graph": "EventGraph",
+        "node_id": "begin_play",
+        "node": {
+          "kind": "event",
+          "owner_class": "/Script/Engine.Actor",
+          "function": "ReceiveBeginPlay"
+        },
+        "position": [0.0, 0.0]
+      }
+    },
+    {
+      "id": "add_sum",
+      "action": "blueprint.graph.add_node",
+      "depends_on": ["create_test_blueprint"],
+      "arguments": {
+        "blueprint": "/Game/CodexTests/BP_CodexMathTest.BP_CodexMathTest",
+        "graph": "EventGraph",
+        "node_id": "sum",
+        "node": {
+          "kind": "function_call",
+          "owner_class": "/Script/Engine.KismetMathLibrary",
+          "function": "Add_IntInt"
+        },
+        "position": [250.0, 180.0]
+      }
+    },
+    {
+      "id": "set_sum_a",
+      "action": "blueprint.graph.set_pin_value",
+      "depends_on": ["add_sum"],
+      "arguments": {
+        "blueprint": "/Game/CodexTests/BP_CodexMathTest.BP_CodexMathTest",
+        "graph": "EventGraph",
+        "node": "sum",
+        "pin": "A",
+        "value": "2"
+      }
+    },
+    {
+      "id": "set_sum_b",
+      "action": "blueprint.graph.set_pin_value",
+      "depends_on": ["add_sum"],
+      "arguments": {
+        "blueprint": "/Game/CodexTests/BP_CodexMathTest.BP_CodexMathTest",
+        "graph": "EventGraph",
+        "node": "sum",
+        "pin": "B",
+        "value": "3"
+      }
+    },
+    {
+      "id": "add_print",
+      "action": "blueprint.graph.add_node",
+      "depends_on": ["create_test_blueprint"],
+      "arguments": {
+        "blueprint": "/Game/CodexTests/BP_CodexMathTest.BP_CodexMathTest",
+        "graph": "EventGraph",
+        "node_id": "print",
+        "node": {
+          "kind": "function_call",
+          "owner_class": "/Script/Engine.KismetSystemLibrary",
+          "function": "PrintString"
+        },
+        "position": [600.0, 0.0]
+      }
+    },
+    {
+      "id": "connect_execution",
+      "action": "blueprint.graph.connect",
+      "depends_on": ["add_begin_play", "add_print"],
+      "arguments": {
+        "blueprint": "/Game/CodexTests/BP_CodexMathTest.BP_CodexMathTest",
+        "graph": "EventGraph",
+        "from": {"node": "begin_play", "pin": "then"},
+        "to": {"node": "print", "pin": "execute"}
+      }
+    },
+    {
+      "id": "connect_sum",
+      "action": "blueprint.graph.connect",
+      "depends_on": ["set_sum_a", "set_sum_b", "add_print"],
+      "arguments": {
+        "blueprint": "/Game/CodexTests/BP_CodexMathTest.BP_CodexMathTest",
+        "graph": "EventGraph",
+        "from": {"node": "sum", "pin": "ReturnValue"},
+        "to": {"node": "print", "pin": "InString"}
+      }
+    },
+    {
+      "id": "compile_blueprint",
+      "action": "blueprint.compile",
+      "depends_on": ["connect_execution", "connect_sum"],
+      "arguments": {
+        "blueprint": "/Game/CodexTests/BP_CodexMathTest.BP_CodexMathTest",
+        "save": false
+      }
+    },
+    {
+      "id": "save_project",
+      "action": "project.save",
+      "depends_on": ["compile_blueprint"],
+      "arguments": {"save_level": true, "save_assets": true}
+    }
+  ]
+}

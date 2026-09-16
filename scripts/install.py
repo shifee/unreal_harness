@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import re
 import shutil
 import sys
 from datetime import datetime
@@ -12,7 +13,15 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE_ROOT = REPO_ROOT / "templates" / "unreal-project"
 SKILL_ROOT = REPO_ROOT / ".agents" / "skills" / "unreal-game-builder"
-REQUIRED_PLUGINS = ("PythonScriptPlugin", "EditorScriptingUtilities")
+REQUIRED_PLUGINS = (
+    "PythonScriptPlugin",
+    "EditorScriptingUtilities",
+    "UnrealCodexGraph",
+)
+NATIVE_MCP_PLUGINS = (
+    "ModelContextProtocol",
+    "AllToolsets",
+)
 MAX_SEARCH_DEPTH = 4
 SKIP_DIRS = {
     ".git",
@@ -39,6 +48,11 @@ def parse_args(argv=None):
         action="store_true",
         help="Back up the .uproject and enable required editor plugins",
     )
+    parser.add_argument(
+        "--enable-native-mcp",
+        action="store_true",
+        help="Also enable Unreal 5.8's experimental MCP server and default toolsets",
+    )
     return parser.parse_args(argv)
 
 
@@ -61,6 +75,11 @@ def validate_project_file(path):
         raise ValueError("Invalid .uproject JSON: {}".format(error))
     if not isinstance(data, dict):
         raise ValueError("The .uproject root must be a JSON object")
+    association = str(data.get("EngineAssociation", "")).strip()
+    if re.match(r"^\d+\.\d+", association) and not association.startswith("5.8"):
+        raise ValueError(
+            "This harness targets Unreal Engine 5.8; project EngineAssociation is " + association
+        )
     return path, data
 
 
@@ -150,17 +169,17 @@ def copy_file(source, destination, dry_run, force, report):
         shutil.copy2(str(source), str(destination))
 
 
-def plugin_status(project_data):
+def plugin_status(project_data, plugin_names):
     entries = project_data.get("Plugins", [])
     enabled = {
         entry.get("Name")
         for entry in entries
         if isinstance(entry, dict) and entry.get("Enabled") is True
     }
-    return {name: name in enabled for name in REQUIRED_PLUGINS}
+    return {name: name in enabled for name in plugin_names}
 
 
-def enable_plugins(project_file, project_data, dry_run, report):
+def enable_plugins(project_file, project_data, plugin_names, dry_run, report):
     plugins = project_data.get("Plugins")
     if not isinstance(plugins, list):
         plugins = []
@@ -171,7 +190,7 @@ def enable_plugins(project_file, project_data, dry_run, report):
         if isinstance(entry, dict) and isinstance(entry.get("Name"), str)
     }
     changed = False
-    for name in REQUIRED_PLUGINS:
+    for name in plugin_names:
         if name in by_name:
             if by_name[name].get("Enabled") is not True:
                 by_name[name]["Enabled"] = True
@@ -183,7 +202,7 @@ def enable_plugins(project_file, project_data, dry_run, report):
         return
     backup = backup_path(project_file)
     report["backups"].append(backup)
-    report["plugins_enabled"].extend(REQUIRED_PLUGINS)
+    report["plugins_enabled"].extend(plugin_names)
     if not dry_run:
         shutil.copy2(str(project_file), str(backup))
         with project_file.open("w", encoding="utf-8", newline="\n") as handle:
@@ -191,7 +210,7 @@ def enable_plugins(project_file, project_data, dry_run, report):
             handle.write("\n")
 
 
-def print_report(project_file, dry_run, report, status):
+def print_report(project_file, dry_run, report, required_status, native_status):
     print("Project: {}".format(project_file))
     print("Mode: {}".format("dry-run" if dry_run else "install"))
     for key, label in (
@@ -204,13 +223,22 @@ def print_report(project_file, dry_run, report, status):
         for path in report[key]:
             print("  - {}".format(path))
     if report["plugins_enabled"]:
-        print("Enabled plugins: {}".format(", ".join(REQUIRED_PLUGINS)))
-    missing = [name for name, enabled in status.items() if not enabled]
+        print("{} plugins: {}".format(
+            "Would enable" if dry_run else "Enabled",
+            ", ".join(report["plugins_enabled"]),
+        ))
+    missing = [name for name, enabled in required_status.items() if not enabled]
     if missing:
         print("Required plugins not enabled: {}".format(", ".join(missing)))
         print("Enable them in Unreal Editor or rerun with --enable-plugins.")
     else:
         print("Required plugins enabled: {}".format(", ".join(REQUIRED_PLUGINS)))
+    native_missing = [name for name, enabled in native_status.items() if not enabled]
+    if native_missing:
+        print("Optional UE 5.8 native MCP plugins not enabled: {}".format(", ".join(native_missing)))
+        print("Enable them manually or rerun with --enable-native-mcp.")
+    else:
+        print("Optional UE 5.8 native MCP enabled: {}".format(", ".join(NATIVE_MCP_PLUGINS)))
 
 
 def install(args):
@@ -223,23 +251,38 @@ def install(args):
         "backups": [],
         "plugins_enabled": [],
     }
-    mappings = (
+    mappings = [
         (TEMPLATE_ROOT / "Content/Python/execute_actions.py", project_root / "Content/Python/execute_actions.py"),
         (TEMPLATE_ROOT / "Content/Python/init_unreal.py", project_root / "Content/Python/init_unreal.py"),
         (TEMPLATE_ROOT / "Content/Python/actions.example.json", project_root / "Content/Python/actions.json"),
         (SKILL_ROOT / "SKILL.md", project_root / ".agents/skills/unreal-game-builder/SKILL.md"),
         (SKILL_ROOT / "agents/openai.yaml", project_root / ".agents/skills/unreal-game-builder/agents/openai.yaml"),
         (SKILL_ROOT / "references/actions-schema.md", project_root / ".agents/skills/unreal-game-builder/references/actions-schema.md"),
-    )
+    ]
+    plugin_root = TEMPLATE_ROOT / "Plugins/UnrealCodexGraph"
+    for source in sorted(path for path in plugin_root.rglob("*") if path.is_file()):
+        mappings.append((source, project_root / source.relative_to(TEMPLATE_ROOT)))
     for source, destination in mappings:
         if not source.is_file():
             raise ValueError("Distribution file missing: {}".format(source))
         copy_file(source, destination, args.dry_run, args.force, report)
 
+    plugins_to_enable = []
     if args.enable_plugins:
-        enable_plugins(project_file, project_data, args.dry_run, report)
-    status = plugin_status(project_data)
-    print_report(project_file, args.dry_run, report, status)
+        plugins_to_enable.extend(REQUIRED_PLUGINS)
+    if args.enable_native_mcp:
+        plugins_to_enable.extend(NATIVE_MCP_PLUGINS)
+    if plugins_to_enable:
+        enable_plugins(
+            project_file,
+            project_data,
+            tuple(dict.fromkeys(plugins_to_enable)),
+            args.dry_run,
+            report,
+        )
+    required_status = plugin_status(project_data, REQUIRED_PLUGINS)
+    native_status = plugin_status(project_data, NATIVE_MCP_PLUGINS)
+    print_report(project_file, args.dry_run, report, required_status, native_status)
 
     if not args.dry_run:
         print("Install files verified: {}".format(all(path.is_file() for _, path in mappings)))

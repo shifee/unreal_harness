@@ -11,13 +11,26 @@ import tempfile
 from pathlib import Path
 
 
-REQUIRED_PLUGINS = ("PythonScriptPlugin", "EditorScriptingUtilities")
+REQUIRED_PLUGINS = (
+    "PythonScriptPlugin",
+    "EditorScriptingUtilities",
+    "UnrealCodexGraph",
+)
+OPTIONAL_UE58_PLUGINS = (
+    "ModelContextProtocol",
+    "AllToolsets",
+)
 REQUIRED_FILES = (
     "Content/Python/execute_actions.py",
     "Content/Python/init_unreal.py",
     "Content/Python/actions.json",
     ".agents/skills/unreal-game-builder/SKILL.md",
     ".agents/skills/unreal-game-builder/references/actions-schema.md",
+    "Plugins/UnrealCodexGraph/UnrealCodexGraph.uplugin",
+    "Plugins/UnrealCodexGraph/Source/UnrealCodexGraph/UnrealCodexGraph.Build.cs",
+    "Plugins/UnrealCodexGraph/Source/UnrealCodexGraph/Public/UnrealCodexGraphLibrary.h",
+    "Plugins/UnrealCodexGraph/Source/UnrealCodexGraph/Private/UnrealCodexGraphLibrary.cpp",
+    "Plugins/UnrealCodexGraph/Source/UnrealCodexGraph/Private/UnrealCodexGraphModule.cpp",
 )
 WINDOWS_ABSOLUTE_PATH = re.compile(r"(?i)(?<![A-Za-z0-9_])[A-Z]:[\\/](?:Users|Storage)[\\/]")
 
@@ -75,6 +88,13 @@ def validate(root):
     except (OSError, json.JSONDecodeError) as error:
         errors.append("Invalid .uproject JSON: {}".format(error))
         project_data = {}
+
+    association = str(project_data.get("EngineAssociation", "")).strip()
+    if re.match(r"^\d+\.\d+", association):
+        if association.startswith("5.8"):
+            checks.append("project EngineAssociation targets Unreal 5.8")
+        else:
+            errors.append("Harness requires Unreal 5.8; EngineAssociation is " + association)
 
     for relative in REQUIRED_FILES:
         if not (root / relative).is_file():
@@ -151,6 +171,9 @@ def validate(root):
         errors.append("Required Unreal plugins are not enabled: {}".format(", ".join(missing_plugins)))
     else:
         checks.append("required Unreal plugins are enabled")
+    native_enabled = [name for name in OPTIONAL_UE58_PLUGINS if name in enabled]
+    if native_enabled:
+        checks.append("optional UE 5.8 native MCP plugins enabled: {}".format(", ".join(native_enabled)))
     return errors, checks
 
 

@@ -1,27 +1,40 @@
 # Unreal Codex Harness
 
-A portable JSON command harness and project-local Codex skill for making controlled Unreal Editor changes. The harness watches `Content/Python/actions.json`, executes supported actions inside Unreal Editor, and writes structured outcomes to `Content/Python/result.json`.
+A portable, safety-focused JSON automation layer and project-local Codex Skill for Unreal Engine 5.8. It watches `Content/Python/actions.json`, validates the whole batch before mutation, executes supported editor operations serially, and atomically writes a structured `result.json` audit record.
 
-The current release was extracted from and tested against an Unreal Engine 5.7 project. It is not claimed to work with every Unreal Engine 5 release because Unreal's Python API can change between versions.
+This project targets Unreal Engine **5.8**. UE 5.7 is no longer supported.
+
+## Design
+
+- Deterministic JSON batches with dependencies, dry-run plans, bounded output, and stable result envelopes.
+- Editor Undo transactions for mutating actions.
+- Inspection-first asset, Blueprint, graph, material, and level workflows.
+- A small C++ graph bridge for K2 functionality that Unreal Python does not expose reliably.
+- No arbitrary Python, shell execution, asset deletion, or silent Blueprint replacement.
+- Optional coexistence with UE 5.8's built-in experimental Unreal MCP server.
+
+The design review behind v1.0 is documented in [docs/IMPLEMENTATION_RESEARCH.md](docs/IMPLEMENTATION_RESEARCH.md).
 
 ## Requirements
 
-- An existing Unreal Engine 5 project with one `.uproject` in its root.
-- Unreal plugins `PythonScriptPlugin` and `EditorScriptingUtilities` enabled.
-- Python 3.9 or newer for the installer and validator (standard library only).
+- Unreal Engine 5.8.
+- An existing project with one `.uproject` in its root.
+- Unreal plugins `PythonScriptPlugin`, `EditorScriptingUtilities`, and the installed `UnrealCodexGraph` project plugin.
+- Python 3.9+ for the installer and validator; they use only the standard library.
+- A UE 5.8-supported C++ toolchain to build the graph bridge (Visual Studio 2022 on Windows).
 - Codex opened at the Unreal project root for project-local skill discovery.
 
-The installer never copies `.uasset`, `.umap`, `Saved`, `Intermediate`, `DerivedDataCache`, game assets, secrets, or a previous machine's `result.json`.
+The optional native MCP integration uses the UE 5.8 `ModelContextProtocol` and `AllToolsets` plugins. Unreal MCP is experimental and listens on loopback without authentication by default; do not expose it to a network.
 
-## Clone and install
+## Install
 
 ```powershell
-git clone https://github.com/OWNER/unreal-codex-harness.git
-cd unreal-codex-harness
+git clone https://github.com/shifee/unreal_harness.git
+cd unreal_harness
 py scripts/install.py --project "C:/Path/Project/Project.uproject"
 ```
 
-Project discovery is also available:
+Project discovery and safe update modes:
 
 ```powershell
 py scripts/install.py
@@ -30,68 +43,103 @@ py scripts/install.py --dry-run --project "C:/Path/Project/Project.uproject"
 py scripts/install.py --force --project "C:/Path/Project/Project.uproject"
 ```
 
-Without an explicit path, the installer checks the current directory, its parents, and then performs a depth-limited search below the current directory. It never scans an entire system drive. If multiple projects are found in an interactive terminal, it asks which one to use.
+Without an explicit path, the installer checks the current directory, its parents, and a depth-limited subtree. It never scans a whole drive. Existing files are skipped; `--force` creates timestamped sibling backups before replacement.
 
-Existing destination files are skipped. `--force` creates timestamped sibling backups before replacement.
-
-## Unreal plugins
-
-The installer reports whether `PythonScriptPlugin` and `EditorScriptingUtilities` are enabled. Enable them manually in Unreal Editor and restart the editor, or explicitly permit the installer to update the project descriptor:
+To let the installer enable the required plugins (with a `.uproject` backup):
 
 ```powershell
 py scripts/install.py --project "C:/Path/Project/Project.uproject" --enable-plugins
 ```
 
-`--enable-plugins` creates a timestamped `.uproject` backup first and changes only the required entries in the `Plugins` array.
+To additionally enable UE 5.8's native MCP server and default toolsets:
 
-## Install only the Codex skill
-
-After this repository is published, the standard `$skill-installer` can install only the portable skill:
-
-```text
-Use $skill-installer to install from https://github.com/OWNER/unreal-codex-harness/tree/main/.agents/skills/unreal-game-builder
+```powershell
+py scripts/install.py --project "C:/Path/Project/Project.uproject" --enable-native-mcp
 ```
 
-That method does not install the Unreal Python harness. Use `scripts/install.py` for the complete integration.
+You can also enable plugins manually in **Edit → Plugins**. Restart Unreal after changing plugins.
 
 ## First run
 
-1. Install the harness and skill.
-2. Enable the required Unreal plugins.
-3. Open or restart the Unreal project.
-4. Open **Window → Developer Tools → Output Log** and confirm:
+1. Open the project in UE 5.8 and allow the `UnrealCodexGraph` Editor plugin to build if prompted.
+2. In **Window → Developer Tools → Output Log**, confirm:
 
    ```text
    [AI WATCHER] Watcher started
    ```
 
-5. Open the Unreal project directory in Codex and try:
+3. Open the project root in Codex and try:
 
    ```text
-   Use $unreal-game-builder to place three instances of an existing Blueprint actor in a row and save the current level.
+   Use $unreal-game-builder to inspect the current level, place three instances of an existing Blueprint actor in a row, and save the level.
    ```
 
-The watcher deliberately treats the existing `actions.json` as already seen at startup. Codex must write a new complete document before the first execution.
+The watcher treats the existing `actions.json` as already seen at startup. A client must write a new complete document to trigger execution.
 
-## Supported actions
+## JSON contract
 
-- `content.create_folder`
-- `blueprint.create`
-- `blueprint.edit`
-- `level.spawn_actor`
-- `project.save`
+```json
+{
+  "format_version": "1.0",
+  "dry_run": false,
+  "commands": [
+    {
+      "id": "inspect_level",
+      "action": "level.inspect",
+      "arguments": {"limit": 100}
+    }
+  ]
+}
+```
 
-Blueprint editing supports adding components, setting component properties and transforms, and setting class-default properties. The harness does not support `level.inspect`, deletion, Blueprint replacement, variables, Event Graph nodes, functions, arbitrary Python, or shell commands. See the installed `references/actions-schema.md` for exact JSON shapes.
+The executor rejects duplicate IDs, unknown actions, forward/missing dependencies, malformed arguments, and batches larger than 200 commands before any mutation occurs. `dry_run: true` returns the execution plan without running commands.
 
-## Validate an installation
+Supported families:
+
+- discovery: `system.capabilities`, `system.describe_actions`
+- content: `content.create_folder`, `content.list`, `asset.inspect`
+- materials: `material.create`, `material.inspect`, `material_instance.create`, `material_instance.set_parameters`
+- Blueprints: `blueprint.create`, `blueprint.inspect`, `blueprint.compile`, `blueprint.edit`
+- graphs: inspect, add universal node kinds, connect pins, set literal pin values
+- levels: inspect actors, spawn actors, set actor transforms and reflected properties
+- persistence: `project.save`
+
+Graph node kinds in v1.0 are `function_call`, `event`, `branch`, `sequence`, `reroute`, `self`, `variable_get`, `variable_set`, and `dynamic_cast`. Query `system.capabilities` rather than assuming the list.
+
+See the installed `references/actions-schema.md` for exact shapes. `examples/numeric-blueprint.json` remains a complete graph example.
+
+## UE 5.8 native MCP
+
+The harness and native Unreal MCP serve different purposes:
+
+- the JSON harness is the deterministic batch, dependency, Undo, and audit layer;
+- native MCP is useful for interactive tool discovery and engine-provided toolsets.
+
+To configure native MCP, enable **Unreal MCP** and **All Toolsets**, enable Auto Start under Editor Preferences, then use the editor console:
+
+```text
+ModelContextProtocol.GenerateClientConfig Codex
+```
+
+The default endpoint is `http://127.0.0.1:8000/mcp`. Unreal serializes tool execution on the game thread, so clients must not issue overlapping calls.
+
+## Validation
 
 ```powershell
 py scripts/validate_install.py "C:/Path/Project"
 ```
 
-Validation checks required files, JSON, Python syntax, skill frontmatter, schema/handler agreement, forbidden source-machine paths, and required Unreal plugins. It does not start Unreal Editor or modify the project.
+Validation checks required files, JSON, Python syntax, skill frontmatter, action-reference drift, forbidden source-machine paths, and required plugins. It does not start Unreal Editor or change the project.
 
-## Updating
+## Install only the Codex Skill
+
+```text
+Use $skill-installer to install from https://github.com/shifee/unreal_harness/tree/main/.agents/skills/unreal-game-builder
+```
+
+This installs only the instructions, not the Unreal Python harness or graph plugin. Use `scripts/install.py` for the complete integration.
+
+## Update
 
 ```powershell
 git pull
@@ -99,28 +147,29 @@ py scripts/install.py --project "C:/Path/Project/Project.uproject" --force
 py scripts/validate_install.py "C:/Path/Project"
 ```
 
-Review the timestamped backups before removing them.
+Review timestamped backups before removing them.
 
 ## Troubleshooting
 
-- No `[AI WATCHER] Watcher started`: confirm both plugins are enabled, restart Unreal Editor, and inspect the Output Log for Python errors.
-- `result.json` does not change: ensure Unreal Editor is open, `init_unreal.py` started, and `actions.json` is valid JSON.
+- No watcher message: confirm the required plugins are enabled, restart Unreal, and inspect the Output Log.
+- `result.json` does not change: make sure Unreal Editor is open and `actions.json` is valid JSON.
+- Graph bridge unavailable: rebuild the project plugin with UE 5.8, restart, then run `system.capabilities`.
 - Multiple projects found: pass the exact `.uproject` with `--project`.
-- Existing files skipped: review them, then rerun with `--force` if replacement is intended.
-- Validation reports missing plugins: enable them manually or reinstall with `--enable-plugins`.
+- Native MCP unavailable: check `LogModelContextProtocol`, confirm Auto Start, and keep the endpoint on loopback.
 
 ## Safe removal
 
-Close Unreal Editor. Remove only these installed paths from the target project after reviewing local modifications:
+Close Unreal Editor and review local modifications before removing:
 
 ```text
 Content/Python/execute_actions.py
 Content/Python/init_unreal.py
 Content/Python/actions.json
 .agents/skills/unreal-game-builder/
+Plugins/UnrealCodexGraph/
 ```
 
-`Content/Python/result.json` is runtime output and can be removed separately if no longer needed. Do not delete the surrounding `Content`, `Python`, or `.agents` directories when they contain unrelated files. Plugin entries in `.uproject` are not removed automatically.
+`Content/Python/result.json` is runtime output. Do not remove surrounding directories if they contain unrelated files. Plugin entries in `.uproject` are not removed automatically.
 
 ## License
 
