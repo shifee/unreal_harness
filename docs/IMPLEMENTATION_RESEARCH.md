@@ -1,6 +1,6 @@
 # UE 5.8 Harness Implementation Research
 
-This review informed v1.0. No third-party source files were copied. The project adopts architectural patterns and reimplements them against the UE 5.8 API in its existing style.
+This review informed v0.1. No third-party source files were copied. The project adopts architectural patterns and reimplements them against the UE 5.8 API in its existing style.
 
 ## Selected references
 

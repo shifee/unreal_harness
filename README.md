@@ -13,7 +13,9 @@ This project targets Unreal Engine **5.8**. UE 5.7 is no longer supported.
 - No arbitrary Python, shell execution, asset deletion, or silent Blueprint replacement.
 - Optional coexistence with UE 5.8's built-in experimental Unreal MCP server.
 
-The design review behind v1.0 is documented in [docs/IMPLEMENTATION_RESEARCH.md](docs/IMPLEMENTATION_RESEARCH.md).
+The design review behind v0.1 is documented in [docs/IMPLEMENTATION_RESEARCH.md](docs/IMPLEMENTATION_RESEARCH.md).
+
+The accepted long-term structure is a universal reflection/asset/graph core with capability discovery, declarative recipes, and backend adapters for specialized Unreal subsystems. See [target architecture](docs/TARGET_ARCHITECTURE.md) and the staged [technical roadmap](docs/ROADMAP.md).
 
 ## Requirements
 
@@ -104,7 +106,7 @@ Supported families:
 - levels: inspect actors, spawn actors, set actor transforms and reflected properties
 - persistence: `project.save`
 
-Graph node kinds in v1.0 are `function_call`, `event`, `branch`, `sequence`, `reroute`, `self`, `variable_get`, `variable_set`, and `dynamic_cast`. Query `system.capabilities` rather than assuming the list.
+Graph node kinds in v0.1 are `function_call`, `event`, `branch`, `sequence`, `reroute`, `self`, `variable_get`, `variable_set`, and `dynamic_cast`. Query `system.capabilities` rather than assuming the list.
 
 See the installed `references/actions-schema.md` for exact shapes. `examples/numeric-blueprint.json` remains a complete graph example.
 
