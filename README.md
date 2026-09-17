@@ -7,6 +7,7 @@ This project targets Unreal Engine **5.8**. UE 5.7 is no longer supported.
 ## Design
 
 - Deterministic JSON batches with dependencies, dry-run plans, bounded output, and stable result envelopes.
+- Declarative `$repeat`, `$mirror`, and `$grid` recipe expansion with `fail`, `reuse`, and `update` conflict modes.
 - Editor Undo transactions for mutating actions.
 - Inspection-first asset, Blueprint, graph, material, and level workflows.
 - A small C++ graph bridge for K2 functionality that Unreal Python does not expose reliably.
@@ -95,6 +96,8 @@ The watcher treats the existing `actions.json` as already seen at startup. A cli
 ```
 
 The executor rejects duplicate IDs, unknown actions, forward/missing dependencies, malformed arguments, and batches larger than 200 commands before any mutation occurs. `dry_run: true` returns the execution plan without running commands.
+
+For repeated constructions, a top-level `recipes` array can generate ordinary commands and nested operation lists with `$repeat`, `$mirror`, and `$grid`. Recipe conflict modes make reruns explicit: `fail` rejects an existing destination, `reuse` keeps it, and `update` applies supported changes without creating duplicates. See `examples/patterned-castle.json` and the installed command reference for the exact schema.
 
 Supported families:
 

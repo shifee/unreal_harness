@@ -16,6 +16,42 @@
 
 The executor validates the complete document before making changes. IDs must be unique, dependencies must reference earlier commands, and the limit is 200 commands. With `dry_run: true`, the result contains a validated plan and performs no commands.
 
+## Declarative recipes
+
+Top-level `recipes` expand into ordinary commands before dependency validation or mutation. A recipe has a unique `id`, one conflict mode, and a `commands` template. Exact `${name}` substitutions preserve the JSON value type; substitutions embedded in a larger string produce a string.
+
+```json
+{
+  "format_version": "1.0",
+  "dry_run": true,
+  "commands": [],
+  "recipes": [{
+    "id": "layout",
+    "conflict_mode": "reuse",
+    "commands": [
+      {"$repeat": {
+        "items": [{"name":"A","x":0}, {"name":"B","x":200}],
+        "template": {"id":"spawn_${name}","action":"level.spawn_actor","arguments":{"level":"current","class":"/Game/AI/BP_Block.BP_Block_C","actor_label":"Block ${name}","transform":{"location":["${x}",0,100]}}}
+      }}
+    ]
+  }]
+}
+```
+
+Patterns can appear anywhere inside a recipe array, including an action's `operations` array:
+
+- `$repeat`: `items` is an array of variable objects; `index` is added when absent.
+- `$mirror`: `axis` is `x`, `y`, or `z`; `item` describes the original; the second expansion negates that coordinate and then applies optional `overrides`; `mirror_index` is `0` or `1`.
+- `$grid`: `axes` maps variable names to non-empty arrays and is expanded as a Cartesian product. It exposes `index`, `<name>_index`, and `axis_<n>_index`; optional `base` adds shared variables.
+
+Each expanded command receives `recipe_id`, and its arguments inherit the recipe's `conflict_mode` unless explicitly set. Modes are:
+
+- `fail`: stop if the destination already exists.
+- `reuse`: use the existing compatible object without replacing it.
+- `update`: reuse the object and apply supported properties/operations. For `material.create`, this rebuilds the simple material expressions; for Blueprint components and level actors it updates later fields/transforms without creating duplicates.
+
+`dry_run` returns the fully expanded command arguments. Recipes are bounded by the same 200-command limit. They do not add scripting, conditions, or arbitrary evaluation.
+
 Every result uses a stable audit envelope:
 
 ```json

@@ -156,6 +156,81 @@ class ExecutorContractTests(unittest.TestCase):
             ["/Game/Test/BP_Test.BP_Test"],
         )
 
+    def test_recipe_patterns_expand_before_validation(self):
+        result = self.run_document(
+            {
+                "format_version": "1.0",
+                "dry_run": True,
+                "commands": [],
+                "recipes": [
+                    {
+                        "id": "patterns",
+                        "conflict_mode": "reuse",
+                        "commands": [
+                            {
+                                "$repeat": {
+                                    "items": [
+                                        {"name": "A", "limit": 3},
+                                        {"name": "B", "limit": 4},
+                                    ],
+                                    "template": {
+                                        "id": "repeat_${name}",
+                                        "action": "level.inspect",
+                                        "arguments": {"query": "${name}", "limit": "${limit}"},
+                                    },
+                                }
+                            },
+                            {
+                                "$mirror": {
+                                    "axis": "x",
+                                    "item": {"name": "Left", "x": -10},
+                                    "overrides": {"name": "Right"},
+                                    "template": {
+                                        "id": "mirror_${name}",
+                                        "action": "level.inspect",
+                                        "arguments": {"query": "x=${x}"},
+                                    },
+                                }
+                            },
+                            {
+                                "$grid": {
+                                    "axes": {"x": [-1, 1], "y": [10, 20]},
+                                    "template": {
+                                        "id": "grid_${x_index}_${y_index}",
+                                        "action": "level.inspect",
+                                        "arguments": {"query": "${x},${y}"},
+                                    },
+                                }
+                            },
+                        ],
+                    }
+                ],
+            }
+        )
+        self.assertTrue(result["success"])
+        self.assertEqual(len(result["plan"]), 8)
+        self.assertEqual(result["recipes"][0]["conflict_mode"], "reuse")
+        self.assertTrue(all(item["recipe_id"] == "patterns" for item in result["plan"]))
+        self.assertTrue(
+            all(item["arguments"]["conflict_mode"] == "reuse" for item in result["plan"])
+        )
+        repeat_a = next(item for item in result["plan"] if item["id"] == "repeat_A")
+        self.assertEqual(repeat_a["arguments"]["limit"], 3)
+        mirror_right = next(item for item in result["plan"] if item["id"] == "mirror_Right")
+        self.assertEqual(mirror_right["arguments"]["query"], "x=10")
+
+    def test_recipe_rejects_unknown_conflict_mode(self):
+        result = self.run_document(
+            {
+                "format_version": "1.0",
+                "recipes": [
+                    {"id": "invalid", "conflict_mode": "overwrite", "commands": []}
+                ],
+            }
+        )
+        self.assertFalse(result["success"])
+        self.assertEqual(result["errors"][0]["code"], "invalid_conflict_mode")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -25,6 +25,7 @@ The runtime files are relative to the project root:
 - Inspect before changing existing state: use `content.list`, `asset.inspect`, `blueprint.inspect`, `blueprint.graph.inspect`, or `level.inspect` as appropriate.
 - Build one complete UTF-8 `actions.json`. Use unique IDs and `depends_on` for commands that require earlier results.
 - For a broad or uncertain batch, first submit the same document with `dry_run: true`, review the returned plan, then remove `dry_run` and execute.
+- For repeated layouts, use document-level recipes with `$repeat`, `$mirror`, and `$grid` instead of duplicating commands or operations. Choose `fail`, `reuse`, or `update` explicitly for recipe conflicts; dry-run the expanded plan before a large mutation.
 - Add `project.save` after mutations that must persist. Prefer command-level `save: false` when a later explicit save covers the batch.
 - Record the previous modification time of `result.json`, write `actions.json`, wait up to 30 seconds for a change, then read the complete result.
 - On failure, report the first failed command, stable `error_code`, and message. Review `changed_objects` before retrying because it records objects touched by the failed batch. Make at most two automatic corrections that remain within the user's request.

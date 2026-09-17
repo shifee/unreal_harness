@@ -3,6 +3,7 @@ import os
 import re
 import traceback
 import uuid
+from itertools import product
 from datetime import datetime, timezone
 
 import unreal
@@ -14,6 +15,8 @@ RESULT_FILE = os.path.join(SCRIPT_DIR, "result.json")
 HARNESS_VERSION = "0.1.0"
 MAX_COMMANDS = 200
 CURRENT_CHANGED_OBJECTS = []
+CONFLICT_MODES = {"fail", "reuse", "update"}
+TEMPLATE_VARIABLE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 class HarnessError(RuntimeError):
@@ -137,6 +140,148 @@ def save_json_file(path, data):
     os.replace(temporary_path, path)
 
 
+def conflict_mode(arguments, default="fail"):
+    mode = arguments.get("conflict_mode", default)
+    require(mode in CONFLICT_MODES, "Invalid conflict_mode: " + str(mode), "invalid_conflict_mode")
+    return mode
+
+
+def substitute_template(value, context):
+    if isinstance(value, str):
+        exact = TEMPLATE_VARIABLE.fullmatch(value)
+        if exact:
+            name = exact.group(1)
+            require(name in context, "Unknown recipe variable: " + name, "invalid_recipe")
+            return context[name]
+
+        def replace(match):
+            name = match.group(1)
+            require(name in context, "Unknown recipe variable: " + name, "invalid_recipe")
+            return str(context[name])
+
+        return TEMPLATE_VARIABLE.sub(replace, value)
+    if isinstance(value, list):
+        expanded = []
+        for item in value:
+            item_value = expand_recipe_value(item, context)
+            if isinstance(item, dict) and len(item) == 1 and next(iter(item), "") in {
+                "$repeat", "$mirror", "$grid"
+            }:
+                require(isinstance(item_value, list), "Recipe pattern must expand to a list", "invalid_recipe")
+                expanded.extend(item_value)
+            else:
+                expanded.append(item_value)
+        return expanded
+    if isinstance(value, dict):
+        return {key: expand_recipe_value(item, context) for key, item in value.items()}
+    return value
+
+
+def expand_pattern(kind, specification, context):
+    require(isinstance(specification, dict), kind + " must be an object", "invalid_recipe")
+    require("template" in specification, kind + " requires template", "invalid_recipe")
+    template = specification["template"]
+    contexts = []
+
+    if kind == "$repeat":
+        items = specification.get("items")
+        require(isinstance(items, list), "$repeat.items must be an array", "invalid_recipe")
+        for index, item in enumerate(items):
+            require(isinstance(item, dict), "$repeat items must be objects", "invalid_recipe")
+            item_context = dict(context)
+            item_context.update(item)
+            item_context.setdefault("index", index)
+            contexts.append(item_context)
+
+    elif kind == "$mirror":
+        axis = specification.get("axis")
+        item = specification.get("item", {})
+        overrides = specification.get("overrides", {})
+        require(axis in {"x", "y", "z"}, "$mirror.axis must be x, y, or z", "invalid_recipe")
+        require(isinstance(item, dict) and isinstance(overrides, dict), "$mirror item and overrides must be objects", "invalid_recipe")
+        require(isinstance(item.get(axis), (int, float)), "$mirror item must contain a numeric axis value", "invalid_recipe")
+        original = dict(context)
+        original.update(item)
+        original["mirror_index"] = 0
+        mirrored = dict(original)
+        mirrored[axis] = -item[axis]
+        mirrored.update(overrides)
+        mirrored["mirror_index"] = 1
+        contexts.extend((original, mirrored))
+
+    elif kind == "$grid":
+        axes = specification.get("axes")
+        base = specification.get("base", {})
+        require(isinstance(axes, dict) and axes, "$grid.axes must be a non-empty object", "invalid_recipe")
+        require(isinstance(base, dict), "$grid.base must be an object", "invalid_recipe")
+        axis_names = list(axes)
+        axis_values = []
+        for name in axis_names:
+            values = axes[name]
+            require(isinstance(values, list) and values, "$grid axis values must be non-empty arrays", "invalid_recipe")
+            axis_values.append(values)
+        for grid_index, combination in enumerate(product(*axis_values)):
+            item_context = dict(context)
+            item_context.update(base)
+            item_context["index"] = grid_index
+            for axis_index, (name, value) in enumerate(zip(axis_names, combination)):
+                item_context[name] = value
+                item_context[name + "_index"] = axes[name].index(value)
+                item_context["axis_{}_index".format(axis_index)] = axes[name].index(value)
+            contexts.append(item_context)
+
+    expanded = []
+    for item_context in contexts:
+        value = expand_recipe_value(template, item_context)
+        if isinstance(value, list):
+            expanded.extend(value)
+        else:
+            expanded.append(value)
+    return expanded
+
+
+def expand_recipe_value(value, context):
+    if isinstance(value, dict) and len(value) == 1:
+        kind = next(iter(value))
+        if kind in {"$repeat", "$mirror", "$grid"}:
+            return expand_pattern(kind, value[kind], context)
+    return substitute_template(value, context)
+
+
+def expand_document_recipes(document):
+    require(isinstance(document, dict), "Document root must be an object", "invalid_document")
+    raw_commands = document.get("commands", [])
+    require(isinstance(raw_commands, list), "'commands' must be an array", "invalid_document")
+    recipes = document.get("recipes", [])
+    require(isinstance(recipes, list), "'recipes' must be an array", "invalid_recipe")
+    commands = list(raw_commands)
+    summaries = []
+    seen_recipe_ids = set()
+    for recipe in recipes:
+        require(isinstance(recipe, dict), "Recipe must be an object", "invalid_recipe")
+        recipe_id = recipe.get("id")
+        require(isinstance(recipe_id, str) and recipe_id, "Recipe id must be a non-empty string", "invalid_recipe")
+        require(recipe_id not in seen_recipe_ids, "Duplicate recipe id: " + recipe_id, "invalid_recipe")
+        seen_recipe_ids.add(recipe_id)
+        mode = conflict_mode(recipe)
+        expanded = expand_recipe_value(recipe.get("commands", []), {})
+        require(isinstance(expanded, list), "Recipe commands must expand to an array", "invalid_recipe")
+        command_ids = []
+        for command in expanded:
+            require(isinstance(command, dict), "Expanded recipe command must be an object", "invalid_recipe")
+            command = dict(command)
+            command["recipe_id"] = recipe_id
+            arguments = dict(command.get("arguments", {}))
+            arguments.setdefault("conflict_mode", mode)
+            command["arguments"] = arguments
+            commands.append(command)
+            command_ids.append(command.get("id"))
+        summaries.append({"id": recipe_id, "conflict_mode": mode, "commands": command_ids})
+    expanded_document = dict(document)
+    expanded_document["commands"] = commands
+    return expanded_document, summaries
+
+
 def object_path(value):
     return value.get_path_name() if value is not None else None
 
@@ -152,7 +297,9 @@ def rotator_values(value):
 def execute_create_folder(arguments):
     path = validate_game_path(arguments["path"])
     if unreal.EditorAssetLibrary.does_directory_exist(path):
-        return {"created": False, "path": path, "message": "Directory already exists"}
+        mode = conflict_mode(arguments, "reuse")
+        require(mode != "fail", "Directory already exists: " + path, "conflict")
+        return {"created": False, "reused": True, "path": path}
     success = unreal.EditorAssetLibrary.make_directory(path)
     require(success, "Could not create directory: " + path)
     mark_changed(path)
@@ -194,8 +341,17 @@ def execute_create_blueprint(arguments):
 
     if unreal.EditorAssetLibrary.does_asset_exist(asset_path):
         if arguments.get("replace_existing", False):
-            raise RuntimeError("Automatic replacement is disabled for safety: " + asset_path)
-        raise RuntimeError("Blueprint already exists: " + asset_path)
+            raise HarnessError("replacement_disabled", "Automatic replacement is disabled for safety: " + asset_path)
+        mode = conflict_mode(arguments)
+        require(mode != "fail", "Blueprint already exists: " + asset_path, "conflict")
+        blueprint = unreal.load_asset(asset_path)
+        require(isinstance(blueprint, unreal.Blueprint), "Existing asset is not a Blueprint: " + asset_path, "type_mismatch")
+        return {
+            "asset_path": object_path,
+            "generated_class_path": object_path + "_C",
+            "created": False,
+            "reused": True,
+        }
 
     if not unreal.EditorAssetLibrary.does_directory_exist(folder):
         require(
@@ -216,26 +372,12 @@ def execute_create_blueprint(arguments):
     return {
         "asset_path": object_path,
         "generated_class_path": object_path + "_C",
+        "created": True,
+        "reused": False,
     }
 
 
-def execute_create_material(arguments):
-    folder = validate_game_path(arguments["folder"])
-    name = validate_name(arguments["name"])
-    asset_path = folder + "/" + name
-    object_path = asset_path + "." + name
-
-    if unreal.EditorAssetLibrary.does_asset_exist(asset_path):
-        if arguments.get("replace_existing", False):
-            raise RuntimeError("Automatic replacement is disabled for safety: " + asset_path)
-        raise RuntimeError("Material already exists: " + asset_path)
-
-    if not unreal.EditorAssetLibrary.does_directory_exist(folder):
-        require(
-            unreal.EditorAssetLibrary.make_directory(folder),
-            "Could not create directory: " + folder,
-        )
-
+def configure_simple_material(material, arguments, clear_existing=False):
     base_color = make_linear_color(
         arguments.get("base_color"), [0.18, 0.20, 0.22, 1.0]
     )
@@ -243,11 +385,8 @@ def execute_create_material(arguments):
     roughness = float(arguments.get("roughness", 0.5))
     require(0.0 <= metallic <= 1.0, "metallic must be between 0 and 1")
     require(0.0 <= roughness <= 1.0, "roughness must be between 0 and 1")
-
-    material = unreal.AssetToolsHelpers.get_asset_tools().create_asset(
-        name, folder, unreal.Material, unreal.MaterialFactoryNew()
-    )
-    require(material is not None, "Could not create Material: " + asset_path)
+    if clear_existing:
+        unreal.MaterialEditingLibrary.delete_all_material_expressions(material)
 
     base_expression = unreal.MaterialEditingLibrary.create_material_expression(
         material, unreal.MaterialExpressionConstant3Vector, -400, -120
@@ -286,16 +425,52 @@ def execute_create_material(arguments):
     )
 
     unreal.MaterialEditingLibrary.recompile_material(material)
+    return base_color, metallic, roughness
+
+
+def execute_create_material(arguments):
+    folder = validate_game_path(arguments["folder"])
+    name = validate_name(arguments["name"])
+    asset_path = folder + "/" + name
+    result_path = asset_path + "." + name
+    mode = conflict_mode(arguments)
+    exists = unreal.EditorAssetLibrary.does_asset_exist(asset_path)
+
+    if arguments.get("replace_existing", False):
+        raise HarnessError("replacement_disabled", "Automatic replacement is disabled for safety: " + asset_path)
+    if exists:
+        require(mode != "fail", "Material already exists: " + asset_path, "conflict")
+        material = unreal.load_asset(asset_path)
+        require(isinstance(material, unreal.Material), "Existing asset is not a Material: " + asset_path, "type_mismatch")
+        if mode == "reuse":
+            return {"asset_path": object_path(material), "created": False, "reused": True, "updated": False}
+    else:
+        if not unreal.EditorAssetLibrary.does_directory_exist(folder):
+            require(
+                unreal.EditorAssetLibrary.make_directory(folder),
+                "Could not create directory: " + folder,
+            )
+        material = unreal.AssetToolsHelpers.get_asset_tools().create_asset(
+            name, folder, unreal.Material, unreal.MaterialFactoryNew()
+        )
+        require(material is not None, "Could not create Material: " + asset_path)
+
+    base_color, metallic, roughness = configure_simple_material(
+        material, arguments, clear_existing=exists and mode == "update"
+    )
     require(
         unreal.EditorAssetLibrary.save_loaded_asset(material, False),
         "Could not save Material: " + asset_path,
     )
     mark_changed(material)
     return {
-        "asset_path": object_path,
+        "asset_path": result_path,
         "base_color": [base_color.r, base_color.g, base_color.b, base_color.a],
         "metallic": metallic,
         "roughness": roughness,
+        "created": not exists,
+        "reused": False,
+        "updated": exists and mode == "update",
     }
 
 
@@ -482,7 +657,16 @@ def execute_compile_blueprint(arguments):
 
 def add_component(blueprint, subsystem, root_handle, components, component_handles, operation):
     component_name = validate_name(operation["component_name"])
-    require(component_name not in components, "Component already exists: " + component_name)
+    existing = find_component(components, component_name)
+    if existing is not None:
+        mode = conflict_mode(operation)
+        require(mode != "fail", "Component already exists: " + component_name, "conflict")
+        return {
+            "operation": "add_component",
+            "component": component_name,
+            "created": False,
+            "reused": True,
+        }
     component_class = load_unreal_class(operation["component_type"])
     parent_handle = component_handles.get(operation.get("attach_to"), root_handle)
     params = unreal.AddNewSubobjectParams(
@@ -501,7 +685,12 @@ def add_component(blueprint, subsystem, root_handle, components, component_handl
     require(component is not None, "Could not access created component: " + component_name)
     components[component_name] = component
     component_handles[component_name] = new_handle
-    return {"operation": "add_component", "component": component_name}
+    return {
+        "operation": "add_component",
+        "component": component_name,
+        "created": True,
+        "reused": False,
+    }
 
 
 def convert_property_value(property_name, value):
@@ -597,6 +786,8 @@ def execute_edit_blueprint(arguments):
     operation_results = []
 
     for operation in arguments.get("operations", []):
+        operation = dict(operation)
+        operation.setdefault("conflict_mode", arguments.get("conflict_mode", "fail"))
         name = operation.get("operation")
         if name == "add_component":
             result = add_component(
@@ -642,6 +833,34 @@ def execute_spawn_actor(arguments):
     location = make_vector(transform.get("location"), [0.0, 0.0, 0.0])
     rotation = make_rotator(transform.get("rotation"))
     scale = make_vector(transform.get("scale"), [1.0, 1.0, 1.0])
+    actor_label = arguments.get("actor_label")
+    actor_name = arguments.get("actor_name")
+    mode = arguments.get("conflict_mode")
+    if mode is not None and (actor_label or actor_name):
+        mode = conflict_mode(arguments)
+        actors = unreal.get_editor_subsystem(unreal.EditorActorSubsystem).get_all_level_actors()
+        matches = [
+            candidate for candidate in actors
+            if (actor_name and candidate.get_name() == actor_name)
+            or (actor_label and candidate.get_actor_label() == actor_label)
+        ]
+        require(len(matches) <= 1, "Actor reference is ambiguous: " + str(actor_name or actor_label), "conflict")
+        if matches:
+            require(mode != "fail", "Actor already exists: " + str(actor_name or actor_label), "conflict")
+            actor = matches[0]
+            require(actor.get_class().get_path_name() == class_path, "Existing actor class does not match: " + class_path, "type_mismatch")
+            if mode == "update":
+                actor.set_actor_location_and_rotation(location, rotation, False, False)
+                actor.set_actor_scale3d(scale)
+                mark_changed(actor)
+            return {
+                "actor_name": actor.get_name(),
+                "actor_label": actor.get_actor_label(),
+                "class": class_path,
+                "created": False,
+                "reused": True,
+                "updated": mode == "update",
+            }
     actor = unreal.get_editor_subsystem(unreal.EditorActorSubsystem).spawn_actor_from_class(
         actor_class, location, rotation
     )
@@ -655,6 +874,9 @@ def execute_spawn_actor(arguments):
         "actor_name": actor.get_name(),
         "actor_label": actor.get_actor_label(),
         "class": class_path,
+        "created": True,
+        "reused": False,
+        "updated": False,
     }
 
 
@@ -802,7 +1024,11 @@ def execute_describe_actions(arguments):
             {"name": name, "mutating": name in MUTATING_ACTIONS}
             for name in sorted(ACTION_HANDLERS)
         ],
-        "document_options": {"dry_run": "Validate and return the execution plan without running commands"},
+        "document_options": {
+            "dry_run": "Validate and return the expanded execution plan without running commands",
+            "recipes": "Expand declarative $repeat, $mirror, and $grid patterns before validation",
+            "conflict_modes": sorted(CONFLICT_MODES),
+        },
     }
 
 
@@ -989,13 +1215,16 @@ def execute_command(command):
             del transaction
     else:
         data = handler(command.get("arguments", {}))
-    return {
+    result = {
         "id": command_id,
         "action": action,
         "success": True,
         "data": data,
         "changed_objects": list(CURRENT_CHANGED_OBJECTS),
     }
+    if command.get("recipe_id"):
+        result["recipe_id"] = command["recipe_id"]
+    return result
 
 
 def main():
@@ -1009,9 +1238,12 @@ def main():
         "commands": [],
         "errors": [],
         "changed_objects": [],
+        "recipes": [],
     }
     try:
         document = load_json_file(ACTIONS_FILE)
+        document, recipe_summaries = expand_document_recipes(document)
+        result["recipes"] = recipe_summaries
         commands = validate_document(document)
         if document.get("dry_run", False):
             result["dry_run"] = True
@@ -1021,6 +1253,8 @@ def main():
                     "action": command["action"],
                     "mutating": command["action"] in MUTATING_ACTIONS,
                     "depends_on": command.get("depends_on", []),
+                    "recipe_id": command.get("recipe_id"),
+                    "arguments": command.get("arguments", {}),
                 }
                 for command in commands
             ]
@@ -1042,6 +1276,7 @@ def main():
                     {
                         "id": command_id,
                         "action": command.get("action"),
+                        "recipe_id": command.get("recipe_id"),
                         "success": False,
                         "skipped": True,
                         "error": str(dependency_error),
@@ -1064,6 +1299,7 @@ def main():
                     {
                         "id": command_id,
                         "action": command.get("action"),
+                        "recipe_id": command.get("recipe_id"),
                         "success": False,
                         "error": error_text,
                         "error_code": getattr(error, "code", "execution_failed"),
