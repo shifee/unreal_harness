@@ -10,6 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 EXECUTOR = ROOT / "templates/unreal-project/Content/Python/execute_actions.py"
+ACTION_FIXTURE = ROOT / "tests/fixtures/actions-v0.1.json"
 
 
 class ExecutorContractTests(unittest.TestCase):
@@ -56,6 +57,24 @@ class ExecutorContractTests(unittest.TestCase):
         self.assertTrue(result["dry_run"])
         self.assertEqual([item["id"] for item in result["plan"]], ["inspect", "save"])
         self.assertFalse(result["plan"][0]["mutating"])
+        self.assertEqual(result["changed_objects"], [])
+
+    def test_dry_run_structure_is_deterministic(self):
+        document = {
+            "format_version": "1.0",
+            "dry_run": True,
+            "commands": [
+                {"id": "capabilities", "action": "system.capabilities", "arguments": {}},
+                {"id": "inspect", "action": "level.inspect", "arguments": {"limit": 10}},
+            ],
+        }
+        first = self.run_document(document)
+        second = self.run_document(document)
+        for result in (first, second):
+            result.pop("run_id")
+            result.pop("started_at")
+            result.pop("finished_at")
+        self.assertEqual(first, second)
 
     def test_duplicate_ids_fail_before_execution(self):
         result = self.run_document(
@@ -69,6 +88,8 @@ class ExecutorContractTests(unittest.TestCase):
         )
         self.assertFalse(result["success"])
         self.assertIn("Duplicate command id", result["errors"][0]["message"])
+        self.assertEqual(result["errors"][0]["code"], "duplicate_command_id")
+        self.assertEqual(result["changed_objects"], [])
 
     def test_forward_dependency_fails_before_execution(self):
         result = self.run_document(
@@ -87,6 +108,22 @@ class ExecutorContractTests(unittest.TestCase):
         )
         self.assertFalse(result["success"])
         self.assertIn("Dependencies must refer to earlier commands", result["errors"][0]["message"])
+        self.assertEqual(result["errors"][0]["code"], "invalid_dependencies")
+
+    def test_all_documented_actions_have_a_dry_run_fixture(self):
+        actions = json.loads(ACTION_FIXTURE.read_text(encoding="utf-8"))
+        document = {
+            "format_version": "1.0",
+            "dry_run": True,
+            "commands": [
+                {"id": "fixture_{}".format(index), "action": action, "arguments": arguments}
+                for index, (action, arguments) in enumerate(actions.items())
+            ],
+        }
+        result = self.run_document(document)
+        self.assertTrue(result["success"])
+        self.assertEqual(len(result["plan"]), 22)
+        self.assertEqual({item["action"] for item in result["plan"]}, set(actions))
 
 
 if __name__ == "__main__":

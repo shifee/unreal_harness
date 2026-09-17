@@ -16,6 +16,30 @@
 
 The executor validates the complete document before making changes. IDs must be unique, dependencies must reference earlier commands, and the limit is 200 commands. With `dry_run: true`, the result contains a validated plan and performs no commands.
 
+Every result uses a stable audit envelope:
+
+```json
+{
+  "format_version": "1.0",
+  "harness_version": "0.1.0",
+  "run_id": "uuid",
+  "success": true,
+  "commands": [
+    {
+      "id": "unique_id",
+      "action": "content.create_folder",
+      "success": true,
+      "data": {},
+      "changed_objects": ["/Game/AI"]
+    }
+  ],
+  "errors": [],
+  "changed_objects": ["/Game/AI"]
+}
+```
+
+Failed commands preserve the readable `error` field and add a stable `error_code`. Entries in the top-level `errors` array contain `command_id`, `code`, `message`, and a traceback for diagnostics. `changed_objects` is present on every executed command and at the top level; inspect it before retrying a failed mutating batch.
+
 ## `system.capabilities`
 
 Returns harness and engine versions, supported actions, graph-bridge availability, and graph node kinds.

@@ -133,6 +133,14 @@ py scripts/validate_install.py "C:/Path/Project"
 
 Validation checks required files, JSON, Python syntax, skill frontmatter, action-reference drift, forbidden source-machine paths, and required plugins. It does not start Unreal Editor or change the project.
 
+For an end-to-end test in a dedicated UE 5.8 project, first install the current harness and close the interactive editor instance for that project, then run:
+
+```powershell
+py scripts/run_ue_smoke_test.py --project "C:/Path/TestProject/TestProject.uproject"
+```
+
+The smoke test checks the capability snapshot, creates a uniquely named material and Actor Blueprint, builds and compiles a BeginPlay → Print String graph, spawns the actor in the commandlet world, and verifies the mutation audit. Test assets are intentionally retained under `/Game/CodexHarnessSmoke/<run>` for inspection; the original `actions.json` and `result.json` are restored.
+
 ## Install only the Codex Skill
 
 ```text

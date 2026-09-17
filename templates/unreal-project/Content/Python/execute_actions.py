@@ -13,6 +13,14 @@ ACTIONS_FILE = os.path.join(SCRIPT_DIR, "actions.json")
 RESULT_FILE = os.path.join(SCRIPT_DIR, "result.json")
 HARNESS_VERSION = "0.1.0"
 MAX_COMMANDS = 200
+CURRENT_CHANGED_OBJECTS = []
+
+
+class HarnessError(RuntimeError):
+    def __init__(self, code, message, details=None):
+        super().__init__(message)
+        self.code = code
+        self.details = details or {}
 
 
 def log(message):
@@ -23,9 +31,38 @@ def log_error(message):
     unreal.log_error("[AI EXECUTOR] " + str(message))
 
 
-def require(condition, message):
+def require(condition, message, code="validation_error"):
     if not condition:
-        raise RuntimeError(message)
+        raise HarnessError(code, message)
+
+
+def error_record(error, command_id=None, include_traceback=False):
+    record = {
+        "command_id": command_id,
+        "code": getattr(error, "code", "execution_failed"),
+        "message": str(error),
+    }
+    details = getattr(error, "details", None)
+    if details:
+        record["details"] = details
+    if include_traceback:
+        record["traceback"] = traceback.format_exc()
+    return record
+
+
+def mark_changed(*values):
+    for value in values:
+        if value is None:
+            continue
+        path = value if isinstance(value, str) else object_path(value)
+        if path and path not in CURRENT_CHANGED_OBJECTS:
+            CURRENT_CHANGED_OBJECTS.append(path)
+
+
+def merge_changed(target, values):
+    for value in values:
+        if value not in target:
+            target.append(value)
 
 
 def validate_game_path(path):
@@ -118,6 +155,7 @@ def execute_create_folder(arguments):
         return {"created": False, "path": path, "message": "Directory already exists"}
     success = unreal.EditorAssetLibrary.make_directory(path)
     require(success, "Could not create directory: " + path)
+    mark_changed(path)
     return {"created": True, "path": path}
 
 
@@ -174,6 +212,7 @@ def execute_create_blueprint(arguments):
     require(blueprint is not None, "Could not create Blueprint: " + asset_path)
     unreal.BlueprintEditorLibrary.compile_blueprint(blueprint)
     unreal.EditorAssetLibrary.save_loaded_asset(blueprint, False)
+    mark_changed(blueprint)
     return {
         "asset_path": object_path,
         "generated_class_path": object_path + "_C",
@@ -251,6 +290,7 @@ def execute_create_material(arguments):
         unreal.EditorAssetLibrary.save_loaded_asset(material, False),
         "Could not save Material: " + asset_path,
     )
+    mark_changed(material)
     return {
         "asset_path": object_path,
         "base_color": [base_color.r, base_color.g, base_color.b, base_color.a],
@@ -320,6 +360,7 @@ def execute_create_material_instance(arguments):
     require(instance is not None, "Could not create Material Instance: " + asset_path)
     unreal.MaterialEditingLibrary.set_material_instance_parent(instance, parent)
     unreal.EditorAssetLibrary.save_loaded_asset(instance, False)
+    mark_changed(instance)
     return {"asset_path": object_path(instance), "parent": object_path(parent)}
 
 
@@ -353,6 +394,7 @@ def execute_set_material_instance_parameters(arguments):
         )
         changed["static_switch"].append(str(name))
     unreal.EditorAssetLibrary.save_loaded_asset(instance, False)
+    mark_changed(instance)
     changed["material_instance"] = object_path(instance)
     return changed
 
@@ -434,6 +476,7 @@ def execute_compile_blueprint(arguments):
     unreal.BlueprintEditorLibrary.compile_blueprint(blueprint)
     if arguments.get("save", False):
         unreal.EditorAssetLibrary.save_loaded_asset(blueprint, False)
+    mark_changed(blueprint)
     return {"blueprint": object_path(blueprint), "compiled": True, "saved": bool(arguments.get("save", False))}
 
 
@@ -577,6 +620,7 @@ def execute_edit_blueprint(arguments):
         unreal.BlueprintEditorLibrary.compile_blueprint(blueprint)
     if arguments.get("save", True):
         unreal.EditorAssetLibrary.save_loaded_asset(blueprint, False)
+    mark_changed(blueprint)
     return {
         "blueprint": blueprint_path,
         "operations": operation_results,
@@ -606,6 +650,7 @@ def execute_spawn_actor(arguments):
     actor.set_actor_label(
         arguments.get("actor_label", arguments.get("actor_name", actor.get_name()))
     )
+    mark_changed(actor)
     return {
         "actor_name": actor.get_name(),
         "actor_label": actor.get_actor_label(),
@@ -674,6 +719,7 @@ def execute_set_actor_transform(arguments):
     scale = make_vector(transform.get("scale"), vector_values(actor.get_actor_scale3d()))
     actor.set_actor_location_and_rotation(location, rotation, False, False)
     actor.set_actor_scale3d(scale)
+    mark_changed(actor)
     return actor_record(actor)
 
 
@@ -681,6 +727,7 @@ def execute_set_actor_property(arguments):
     actor = find_level_actor(arguments)
     property_name = validate_name(arguments["property"])
     actor.set_editor_property(property_name, arguments["value"])
+    mark_changed(actor)
     return {"actor": actor.get_path_name(), "property": property_name}
 
 
@@ -782,6 +829,7 @@ def execute_graph_add_node(arguments):
     )
     result = parse_graph_result(raw_result)
     GRAPH_NODE_ALIASES[graph_alias_key(blueprint_path, graph_name, node_id)] = result["node_guid"]
+    mark_changed(blueprint_path)
     result["node_id"] = node_id
     return result
 
@@ -791,7 +839,7 @@ def execute_graph_connect(arguments):
     graph_name = arguments.get("graph", "EventGraph")
     source = arguments["from"]
     target = arguments["to"]
-    return parse_graph_result(
+    result = parse_graph_result(
         graph_bridge().connect_pins(
             blueprint_path,
             graph_name,
@@ -801,12 +849,14 @@ def execute_graph_connect(arguments):
             target["pin"],
         )
     )
+    mark_changed(blueprint_path)
+    return result
 
 
 def execute_graph_set_pin_value(arguments):
     blueprint_path = arguments["blueprint"]
     graph_name = arguments.get("graph", "EventGraph")
-    return parse_graph_result(
+    result = parse_graph_result(
         graph_bridge().set_pin_default_value(
             blueprint_path,
             graph_name,
@@ -815,6 +865,8 @@ def execute_graph_set_pin_value(arguments):
             str(arguments["value"]),
         )
     )
+    mark_changed(blueprint_path)
+    return result
 
 
 ACTION_HANDLERS = {
@@ -861,30 +913,64 @@ MUTATING_ACTIONS = {
 
 
 def validate_document(document):
-    require(isinstance(document, dict), "Document root must be an object")
-    require(document.get("format_version") == "1.0", "Unsupported format_version")
+    require(isinstance(document, dict), "Document root must be an object", "invalid_document")
+    require(
+        document.get("format_version") == "1.0",
+        "Unsupported format_version",
+        "unsupported_format",
+    )
     commands = document.get("commands")
-    require(isinstance(commands, list), "'commands' must be an array")
-    require(len(commands) <= MAX_COMMANDS, "Too many commands; maximum is " + str(MAX_COMMANDS))
+    require(isinstance(commands, list), "'commands' must be an array", "invalid_document")
+    require(
+        len(commands) <= MAX_COMMANDS,
+        "Too many commands; maximum is " + str(MAX_COMMANDS),
+        "too_many_commands",
+    )
     seen = set()
     for index, command in enumerate(commands):
-        require(isinstance(command, dict), "Command at index {} must be an object".format(index))
+        require(
+            isinstance(command, dict),
+            "Command at index {} must be an object".format(index),
+            "invalid_command",
+        )
         command_id = command.get("id")
         action = command.get("action")
-        require(isinstance(command_id, str) and command_id, "Command id must be a non-empty string")
-        require(command_id not in seen, "Duplicate command id: " + command_id)
-        require(action in ACTION_HANDLERS, "Unsupported action: " + str(action))
-        require(isinstance(command.get("arguments", {}), dict), "arguments must be an object: " + command_id)
+        require(
+            isinstance(command_id, str) and command_id,
+            "Command id must be a non-empty string",
+            "invalid_command",
+        )
+        require(command_id not in seen, "Duplicate command id: " + command_id, "duplicate_command_id")
+        require(action in ACTION_HANDLERS, "Unsupported action: " + str(action), "unsupported_action")
+        require(
+            isinstance(command.get("arguments", {}), dict),
+            "arguments must be an object: " + command_id,
+            "invalid_arguments",
+        )
         dependencies = command.get("depends_on", [])
-        require(isinstance(dependencies, list), "depends_on must be an array: " + command_id)
-        require(all(isinstance(item, str) for item in dependencies), "depends_on values must be strings")
+        require(
+            isinstance(dependencies, list),
+            "depends_on must be an array: " + command_id,
+            "invalid_dependencies",
+        )
+        require(
+            all(isinstance(item, str) for item in dependencies),
+            "depends_on values must be strings",
+            "invalid_dependencies",
+        )
         missing = [item for item in dependencies if item not in seen]
-        require(not missing, "Dependencies must refer to earlier commands: " + ", ".join(missing))
+        require(
+            not missing,
+            "Dependencies must refer to earlier commands: " + ", ".join(missing),
+            "invalid_dependencies",
+        )
         seen.add(command_id)
     return commands
 
 
 def execute_command(command):
+    global CURRENT_CHANGED_OBJECTS
+    CURRENT_CHANGED_OBJECTS = []
     command_id = command.get("id")
     action = command.get("action")
     require(command_id, "Command does not contain an id")
@@ -908,6 +994,7 @@ def execute_command(command):
         "action": action,
         "success": True,
         "data": data,
+        "changed_objects": list(CURRENT_CHANGED_OBJECTS),
     }
 
 
@@ -921,6 +1008,7 @@ def main():
         "success": True,
         "commands": [],
         "errors": [],
+        "changed_objects": [],
     }
     try:
         document = load_json_file(ACTIONS_FILE)
@@ -946,13 +1034,19 @@ def main():
                 if command_status.get(dependency) is not True
             ]
             if failed_dependencies:
+                dependency_error = HarnessError(
+                    "dependency_failed",
+                    "Failed dependencies: " + ", ".join(failed_dependencies),
+                )
                 result["commands"].append(
                     {
                         "id": command_id,
                         "action": command.get("action"),
                         "success": False,
                         "skipped": True,
-                        "error": "Failed dependencies: " + ", ".join(failed_dependencies),
+                        "error": str(dependency_error),
+                        "error_code": dependency_error.code,
+                        "changed_objects": [],
                     }
                 )
                 command_status[command_id] = False
@@ -961,6 +1055,7 @@ def main():
             try:
                 command_result = execute_command(command)
                 result["commands"].append(command_result)
+                merge_changed(result["changed_objects"], command_result["changed_objects"])
                 command_status[command_id] = True
             except Exception as error:
                 error_text = str(error)
@@ -971,22 +1066,17 @@ def main():
                         "action": command.get("action"),
                         "success": False,
                         "error": error_text,
+                        "error_code": getattr(error, "code", "execution_failed"),
+                        "changed_objects": list(CURRENT_CHANGED_OBJECTS),
                     }
                 )
-                result["errors"].append(
-                    {
-                        "command_id": command_id,
-                        "message": error_text,
-                        "traceback": traceback.format_exc(),
-                    }
-                )
+                merge_changed(result["changed_objects"], CURRENT_CHANGED_OBJECTS)
+                result["errors"].append(error_record(error, command_id, True))
                 command_status[command_id] = False
                 result["success"] = False
     except Exception as error:
         result["success"] = False
-        result["errors"].append(
-            {"command_id": None, "message": str(error), "traceback": traceback.format_exc()}
-        )
+        result["errors"].append(error_record(error, None, True))
         log_error(str(error))
 
     result["finished_at"] = datetime.now(timezone.utc).isoformat()

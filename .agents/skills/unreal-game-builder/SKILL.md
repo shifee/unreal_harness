@@ -27,7 +27,7 @@ The runtime files are relative to the project root:
 - For a broad or uncertain batch, first submit the same document with `dry_run: true`, review the returned plan, then remove `dry_run` and execute.
 - Add `project.save` after mutations that must persist. Prefer command-level `save: false` when a later explicit save covers the batch.
 - Record the previous modification time of `result.json`, write `actions.json`, wait up to 30 seconds for a change, then read the complete result.
-- On failure, report the first failed command and error. Make at most two automatic corrections that remain within the user's request.
+- On failure, report the first failed command, stable `error_code`, and message. Review `changed_objects` before retrying because it records objects touched by the failed batch. Make at most two automatic corrections that remain within the user's request.
 
 ## Blueprint graphs
 
