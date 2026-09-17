@@ -164,7 +164,7 @@ def execute_list_content(arguments):
     recursive = bool(arguments.get("recursive", True))
     limit = int(arguments.get("limit", 200))
     require(1 <= limit <= 2000, "limit must be between 1 and 2000")
-    assets = unreal.EditorAssetLibrary.list_assets(path, recursive, False)
+    assets = [str(asset) for asset in unreal.EditorAssetLibrary.list_assets(path, recursive, False)]
     query = str(arguments.get("query", "")).lower().strip()
     if query:
         assets = [asset for asset in assets if query in str(asset).lower()]

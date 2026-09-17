@@ -14,7 +14,7 @@ ACTION_FIXTURE = ROOT / "tests/fixtures/actions-v0.1.json"
 
 
 class ExecutorContractTests(unittest.TestCase):
-    def run_document(self, document):
+    def run_document(self, document, configure_unreal=None):
         with tempfile.TemporaryDirectory(prefix="unreal-codex-executor-") as directory:
             root = Path(directory)
             shutil.copy2(EXECUTOR, root / "execute_actions.py")
@@ -22,6 +22,8 @@ class ExecutorContractTests(unittest.TestCase):
             fake_unreal = types.ModuleType("unreal")
             fake_unreal.log = lambda message: None
             fake_unreal.log_error = lambda message: None
+            if configure_unreal:
+                configure_unreal(fake_unreal)
             previous = sys.modules.get("unreal")
             sys.modules["unreal"] = fake_unreal
             try:
@@ -124,6 +126,35 @@ class ExecutorContractTests(unittest.TestCase):
         self.assertTrue(result["success"])
         self.assertEqual(len(result["plan"]), 22)
         self.assertEqual({item["action"] for item in result["plan"]}, set(actions))
+
+    def test_content_list_normalizes_unreal_array_values_to_strings(self):
+        class UnrealPath:
+            def __str__(self):
+                return "/Game/Test/BP_Test.BP_Test"
+
+        def configure(fake_unreal):
+            fake_unreal.EditorAssetLibrary = types.SimpleNamespace(
+                list_assets=lambda path, recursive, include_folder: [UnrealPath()]
+            )
+
+        result = self.run_document(
+            {
+                "format_version": "1.0",
+                "commands": [
+                    {
+                        "id": "list",
+                        "action": "content.list",
+                        "arguments": {"path": "/Game/Test", "limit": 10},
+                    }
+                ],
+            },
+            configure,
+        )
+        self.assertTrue(result["success"])
+        self.assertEqual(
+            result["commands"][0]["data"]["assets"],
+            ["/Game/Test/BP_Test.BP_Test"],
+        )
 
 
 if __name__ == "__main__":
