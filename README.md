@@ -111,6 +111,20 @@ Supported families:
 
 Graph node kinds in v0.1 are `function_call`, `event`, `branch`, `sequence`, `reroute`, `self`, `variable_get`, `variable_set`, and `dynamic_cast`. Query `system.capabilities` rather than assuming the list.
 
+`blueprint.compile` now checks Unreal's actual `BlueprintStatus`: a graph rejected by the compiler returns `blueprint_compile_failed` instead of a false successful result.
+
+## Demonstrated capabilities
+
+The checked examples and UE 5.8 validation runs currently demonstrate:
+
+- `examples/numeric-blueprint.json`: create an Actor Blueprint, build `BeginPlay → Print String`, calculate `2 + 3`, connect exec/data pins, compile, save, and spawn it.
+- `examples/patterned-castle.json`: expand `$repeat`, `$mirror`, and `$grid`, create/update materials and components, and rerun without actor or component duplicates.
+- Blueprint showcase validation: a visible five-mesh Actor whose Event Graph uses `event`, function calls, two sequences, arithmetic, reroute, comparison, branch, self reference, dynamic cast, component variable get, automatic `int → string` conversion, and `SetVisibility`. The validated graph contains 21 nodes and 20 links and compiles as `BS_UP_TO_DATE`.
+
+In practical terms, the harness can inspect content and levels; create simple materials, Actor Blueprints, components, transforms, and level instances; assemble a useful subset of K2 graphs by reflected class/function names; set literal pins; connect compatible pins through Unreal's schema; compile and save assets; and compose repeated work through declarative recipes with explicit conflict handling.
+
+Current boundaries are equally important: there is no generic property codec, factory-driven asset creation, contextual Blueprint node catalog, graph node removal/disconnect, complete recipe runtime, or JSON-controlled PIE session. `variable_set` is only safe when the target property is already known to be writable; automatic metadata validation is scheduled for roadmap stage 0.5.
+
 See the installed `references/actions-schema.md` for exact shapes. `examples/numeric-blueprint.json` remains a complete graph example.
 
 ## UE 5.8 native MCP

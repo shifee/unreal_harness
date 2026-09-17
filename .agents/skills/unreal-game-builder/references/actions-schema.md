@@ -160,6 +160,8 @@ Returns parent/generated classes, graph names, components, transforms, meshes, a
 
 ## `blueprint.compile`
 
+Compilation success follows Unreal's `BlueprintStatus`, not merely completion of the editor call. Successful data includes `compile_status`; `BS_ERROR` returns the stable error code `blueprint_compile_failed` and does not report a successful command.
+
 ```json
 {"id":"compile","action":"blueprint.compile","arguments":{"blueprint":"/Game/AI/Blueprints/BP_Test.BP_Test","save":false}}
 ```
