@@ -644,15 +644,31 @@ def execute_inspect_blueprint(arguments):
     }
 
 
+def compile_blueprint_checked(blueprint):
+    unreal.BlueprintEditorLibrary.compile_blueprint(blueprint)
+    status = blueprint.get_editor_property("status")
+    require(
+        status != unreal.BlueprintStatus.BS_ERROR,
+        "Blueprint compilation failed: " + object_path(blueprint),
+        "blueprint_compile_failed",
+    )
+    return str(status)
+
+
 def execute_compile_blueprint(arguments):
     blueprint_path = validate_game_path(asset_package_path(arguments["blueprint"]))
     blueprint = unreal.load_asset(blueprint_path)
     require(isinstance(blueprint, unreal.Blueprint), "Blueprint not found: " + blueprint_path)
-    unreal.BlueprintEditorLibrary.compile_blueprint(blueprint)
+    compile_status = compile_blueprint_checked(blueprint)
     if arguments.get("save", False):
         unreal.EditorAssetLibrary.save_loaded_asset(blueprint, False)
     mark_changed(blueprint)
-    return {"blueprint": object_path(blueprint), "compiled": True, "saved": bool(arguments.get("save", False))}
+    return {
+        "blueprint": object_path(blueprint),
+        "compiled": True,
+        "compile_status": compile_status,
+        "saved": bool(arguments.get("save", False)),
+    }
 
 
 def add_component(blueprint, subsystem, root_handle, components, component_handles, operation):
@@ -807,8 +823,9 @@ def execute_edit_blueprint(arguments):
             raise RuntimeError("Unsupported Blueprint operation: " + str(name))
         operation_results.append(result)
 
+    compile_status = None
     if arguments.get("compile", True):
-        unreal.BlueprintEditorLibrary.compile_blueprint(blueprint)
+        compile_status = compile_blueprint_checked(blueprint)
     if arguments.get("save", True):
         unreal.EditorAssetLibrary.save_loaded_asset(blueprint, False)
     mark_changed(blueprint)
@@ -816,6 +833,7 @@ def execute_edit_blueprint(arguments):
         "blueprint": blueprint_path,
         "operations": operation_results,
         "compiled": arguments.get("compile", True),
+        "compile_status": compile_status,
         "saved": arguments.get("save", True),
     }
 

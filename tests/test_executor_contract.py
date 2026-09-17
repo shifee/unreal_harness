@@ -156,6 +156,56 @@ class ExecutorContractTests(unittest.TestCase):
             ["/Game/Test/BP_Test.BP_Test"],
         )
 
+    def test_blueprint_compile_reports_unreal_compile_error(self):
+        class Blueprint:
+            def get_editor_property(self, name):
+                self.assert_status_property(name)
+                return "error"
+
+            @staticmethod
+            def assert_status_property(name):
+                if name != "status":
+                    raise AssertionError("Unexpected property: " + name)
+
+            @staticmethod
+            def get_path_name():
+                return "/Game/Test/BP_Broken.BP_Broken"
+
+        class Transaction:
+            def __init__(self, description):
+                self.description = description
+
+            def cancel(self):
+                pass
+
+        def configure(fake_unreal):
+            fake_unreal.Blueprint = Blueprint
+            fake_unreal.BlueprintStatus = types.SimpleNamespace(BS_ERROR="error")
+            fake_unreal.BlueprintEditorLibrary = types.SimpleNamespace(
+                compile_blueprint=lambda blueprint: None
+            )
+            fake_unreal.ScopedEditorTransaction = Transaction
+            fake_unreal.load_asset = lambda path: Blueprint()
+
+        result = self.run_document(
+            {
+                "format_version": "1.0",
+                "commands": [
+                    {
+                        "id": "compile",
+                        "action": "blueprint.compile",
+                        "arguments": {
+                            "blueprint": "/Game/Test/BP_Broken.BP_Broken",
+                            "save": False,
+                        },
+                    }
+                ],
+            },
+            configure,
+        )
+        self.assertFalse(result["success"])
+        self.assertEqual(result["errors"][0]["code"], "blueprint_compile_failed")
+
     def test_recipe_patterns_expand_before_validation(self):
         result = self.run_document(
             {
